@@ -8,11 +8,11 @@ import (
 
 const (
 	// TODO: Parameterize these.
-	nCharts        = int64(10)
-	nVersions      = int64(2)
-	nRoutines      = int64(2)
+	nCharts        = int64(100000)
+	nVersions      = int64(50)
+	nRoutines      = int64(100)
 	url            = "https://52.66.227.158/charts/api/admin/myrepo/charts"
-	repeatFailures = true
+	repeatFailures = false
 	verbose        = true
 	username       = "admin"
 	password       = "password1234"

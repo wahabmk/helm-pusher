@@ -102,12 +102,14 @@ func (p *Pusher) Push() error {
 			time.Sleep(5 * time.Second)
 			if p.verbose {
 				var done int64 = 0
+				var errors int64 = 0
 				for i := int64(0); i < p.nRoutines; i++ {
-					// done might not be accurate because `routines[i].N` is not
-					// synchronized, but this is just for logging so it is okay.
+					// done and errors may not be accurate because the write is not synchronized,
+					// but this is just for logging so it is okay.
 					done += routines[i].nCharts
+					errors += routines[i].errors
 				}
-				fmt.Printf("%d charts pushed\tin %v\n", p.nCharts-done, time.Now().Sub(startTime).Round(1*time.Millisecond))
+				fmt.Printf("%d chart push attempts\twith %d (%.2f perc) errors\tin %v\n", p.nCharts-done, errors, float64(errors*100)/float64(p.nCharts-done), time.Now().Sub(startTime).Round(1*time.Millisecond))
 			} else {
 				fmt.Printf("... ")
 			}
