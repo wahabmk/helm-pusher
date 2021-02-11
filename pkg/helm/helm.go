@@ -25,7 +25,6 @@ func PackageChart(c *chart.Chart) (io.Reader, error) {
 		return nil, fmt.Errorf("chart validation: %w", err)
 	}
 
-	// var b []byte
 	buf := bytes.NewBuffer([]byte{})
 
 	// Wrap in gzip writer

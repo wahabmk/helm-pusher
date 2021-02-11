@@ -13,13 +13,7 @@ import (
 )
 
 const (
-	defaultRoutines = 10
-	host            = "52.66.227.158"
-	username        = "admin"
-	password        = "password1234"
-	namespace       = "admin"
-	repository      = "myrepo"
-	templateChart   = "/tmp/testchart"
+	templateChart = "/tmp/testchart"
 )
 
 type Pusher struct {
@@ -86,17 +80,19 @@ func (p *Pusher) Push() error {
 
 	// Create objects for the number fo go-routines required.
 	each := math.Ceil(float64(p.nCharts) / float64(p.nRoutines))
-	routines := make([]*Routine, p.nRoutines)
+	routines := make([]*routine, p.nRoutines)
 	for i := int64(0); i < p.nRoutines; i++ {
-		routines[i] = &Routine{
-			N:              int64(each),
-			Chart:          func(c chart.Chart) *chart.Chart { return &c }(*chartTempl),
-			RepeatFailures: p.repeatFailures,
+		routines[i] = &routine{
+			id:             i,
+			nCharts:        int64(each),
+			chart:          func(c chart.Chart) *chart.Chart { return &c }(*chartTempl),
+			repeatFailures: p.repeatFailures,
+			errorKinds:     map[string]interface{}{},
 		}
 	}
 
 	if diff := p.nRoutines*int64(each) - p.nCharts; diff > 0 {
-		routines[len(routines)-1].N -= diff
+		routines[len(routines)-1].nCharts -= diff
 	}
 
 	var startTime time.Time
@@ -109,7 +105,7 @@ func (p *Pusher) Push() error {
 				for i := int64(0); i < p.nRoutines; i++ {
 					// done might not be accurate because `routines[i].N` is not
 					// synchronized, but this is just for logging so it is okay.
-					done += routines[i].N
+					done += routines[i].nCharts
 				}
 				fmt.Printf("%d charts pushed\tin %v\n", p.nCharts-done, time.Now().Sub(startTime).Round(1*time.Millisecond))
 			} else {
@@ -119,7 +115,7 @@ func (p *Pusher) Push() error {
 	}()
 
 	fmt.Printf("Pushing %d charts:\n", p.nCharts)
-	fmt.Printf("* To '%s/charts/api/%s/%s/charts'\n", host, namespace, repository)
+	fmt.Printf("* To %s\n", p.url)
 	fmt.Printf("* With each chart having random number of versions between 1 to %d\n", p.nVersions)
 	fmt.Printf("* With go-routines = %d\n", p.nRoutines)
 	fmt.Printf("* With repeat failues = %v\n", p.repeatFailures)
@@ -131,7 +127,7 @@ func (p *Pusher) Push() error {
 	for i := int64(0); i < p.nRoutines; i++ {
 		wg.Add(1)
 		go func(idx int64) {
-			routines[idx].Do(p.nVersions)
+			routines[idx].push(p.nVersions, p.url, p.username, p.password)
 			wg.Done()
 		}(i)
 	}
@@ -141,12 +137,34 @@ func (p *Pusher) Push() error {
 	// Output results.
 	var errors int64 = 0
 	for i := int64(0); i < p.nRoutines; i++ {
-		errors += routines[i].Errors
+		errors += routines[i].errors
 	}
+
+	// TODO: Find better way of determining number of charts successfully pushed.
+	// Currently if `repeatFailures=true`, then this number is inaccurate.
 	fmt.Printf("\n\nResults:\n")
-	fmt.Printf("* Errors encountered: %d\n", errors)
 	fmt.Printf("* Charts successfully pushed: %d\n", p.nCharts-errors)
 	fmt.Printf("* Time elapsed: %v\n", endTime.Sub(startTime).Round(1*time.Millisecond))
+	fmt.Printf("* Errors encountered: %d\n", errors)
+	fmt.Printf("* Kinds of errors encountered: ")
+
+	errKinds := map[string]interface{}{}
+	for i := int64(0); i < p.nRoutines; i++ {
+		for e := range routines[i].errorKinds {
+			errKinds[e] = nil
+		}
+	}
+
+	if len(errKinds) == 0 {
+		fmt.Printf("None")
+	}
+	fmt.Printf("\n")
+
+	i := 1
+	for e := range errKinds {
+		fmt.Printf("\t%d. %s\n", i, e)
+		i++
+	}
 
 	return nil
 }

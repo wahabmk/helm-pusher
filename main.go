@@ -7,24 +7,19 @@ import (
 )
 
 const (
-	defaultRoutines = 10
-	host            = "52.66.227.158"
-	username        = "admin"
-	password        = "password1234"
-	namespace       = "admin"
-	repository      = "myrepo"
-	templateChart   = "/tmp/testchart"
+	// TODO: Parameterize these.
+	nCharts        = int64(10)
+	nVersions      = int64(2)
+	nRoutines      = int64(2)
+	url            = "https://52.66.227.158/charts/api/admin/myrepo/charts"
+	repeatFailures = true
+	verbose        = true
+	username       = "admin"
+	password       = "password1234"
+	templateChart  = "/tmp/testchart"
 )
 
 func main() {
-	nCharts := int64(500)
-	nVersions := int64(10)
-	nRoutines := int64(10)
-	username := "admin"
-	password := "password1234"
-	url := ""
-	repeatFailures := true
-	verbose := true
 	p, err := pusher.New(nCharts, nVersions, nRoutines, url, username, password, repeatFailures, verbose)
 	if err != nil {
 		println(err)

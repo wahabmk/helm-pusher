@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"net/url"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/wahabmk/helm-pusher/pkg/helm"
-	"github.com/wahabmk/helm-pusher/pkg/rand"
+	"github.com/wahabmk/helm-pusher/pkg/random"
 	"helm.sh/helm/v3/pkg/chart"
 )
 
@@ -25,27 +26,38 @@ var (
 	}
 )
 
-// Routine has all the fields that each go-routine needs.
-type Routine struct {
-	N              int64
-	Errors         int64
-	Chart          *chart.Chart
-	RepeatFailures bool
+// routine has all the fields that each go-routine needs.
+type routine struct {
+	id             int64
+	nCharts        int64
+	errors         int64
+	chart          *chart.Chart
+	repeatFailures bool
+	errorKinds     map[string]interface{}
 }
 
-// Do creates and pushes `N` charts with each chart having random number of versions upto `versions`.
-func (r *Routine) Do(versions int64) {
-	for r.N > 0 {
-		name, err := r.generateName()
+// Push creates and pushes `N` charts with each chart having random number of versions upto `versions`.
+//
+// TODO: Sometimes pushing returns with status 422. Status 422 in MSR is returned when the chart already exists.
+// Maybe there is some issue with randomness that creates charts with equal name?
+// This bug has been observed fairly consistently with the following parameters:
+// 	nCharts        = 10
+//	nVersions      = 2
+//	nRoutines      = 2
+func (r *routine) push(versions int64, url, username, password string) {
+	entropy := random.New(r.id + 1)
+
+	for r.nCharts > 0 {
+		name, err := r.generateName(entropy)
 		if err != nil {
 			continue
 		}
 
 		_versions := r.versionsToCreate(versions)
-		r.N -= _versions
+		r.nCharts -= _versions
 
 		for i := _versions; i > 0; i-- {
-			version, err := r.generateVersion(_versions)
+			version, err := r.generateVersion(entropy, _versions)
 			if err != nil {
 				continue
 			}
@@ -55,23 +67,28 @@ func (r *Routine) Do(versions int64) {
 				continue
 			}
 
-			if err = r.pushChart(reader, false); err != nil {
+			if err = r.pushChart(reader, username, password, url, false); err != nil {
 				continue
 			}
 		}
 	}
 }
 
-func (r *Routine) generateName() (string, error) {
-	name, err := rand.String(10)
+func (r *routine) generateName(entropy *random.Entropy) (string, error) {
+	u, err := entropy.String()
 	if err != nil {
-		return "", fmt.Errorf("error generating rand string for name: %w", err)
+		r.errors++
+		r.errorKinds[err.Error()] = nil
+		if r.repeatFailures {
+			r.nCharts++
+		}
+		return "", fmt.Errorf("error generating name: %w", err)
 	}
 
-	return name, nil
+	return u, nil
 }
 
-func (r *Routine) generateVersion(versions int64) (string, error) {
+func (r *routine) generateVersion(entropy *random.Entropy, versions int64) (string, error) {
 	var (
 		err        error
 		prerelease string
@@ -80,20 +97,21 @@ func (r *Routine) generateVersion(versions int64) (string, error) {
 
 	defer func() {
 		if err != nil {
-			if r.RepeatFailures {
-				r.N++
-			} else {
-				r.Errors++
+			r.errors++
+			r.errorKinds[err.Error()] = nil
+			if r.repeatFailures {
+				r.nCharts++
 			}
 		}
 	}()
 
-	major := rand.Int64(0, versions)
-	minor := rand.Int64(0, versions)
-	patch := rand.Int64(0, versions)
-	prerelease, err = rand.String(rand.Int64(versions, versions*2))
+	major := rand.Int63()
+	minor := rand.Int63()
+	patch := rand.Int63()
+	prerelease, err = entropy.String()
 	if err != nil {
-		return "", fmt.Errorf("error generating rand string for prerelease: %w", err)
+		err = fmt.Errorf("error generating prerelease: %w", err)
+		return "", err
 	}
 
 	ver := fmt.Sprintf("%d.%d.%d-%s", major, minor, patch, prerelease)
@@ -105,48 +123,50 @@ func (r *Routine) generateVersion(versions int64) (string, error) {
 	return version.String(), nil
 }
 
-func (r *Routine) versionsToCreate(versions int64) int64 {
+func (r *routine) versionsToCreate(versions int64) int64 {
 	var _versions int64
 
 	if versions <= 0 {
 		_versions = 0
 	} else if versions == 1 {
 		_versions = 1
-	} else if versions > r.N {
-		_versions = r.N
+	} else if versions > r.nCharts {
+		_versions = r.nCharts
 	} else {
-		_versions = rand.Int64(0, versions)
+		_versions = random.Int63n(1, versions+1)
 	}
 
 	return _versions
 }
 
-func (r *Routine) generateChart(name, version string) (io.Reader, error) {
-	r.Chart.Metadata.Name = name
-	r.Chart.Metadata.Version = version
+func (r *routine) generateChart(name, version string) (io.Reader, error) {
+	r.chart.Metadata.Name = name
+	r.chart.Metadata.Version = version
 
-	buf, err := helm.PackageChart(r.Chart)
+	buf, err := helm.PackageChart(r.chart)
 	if err != nil {
-		if r.RepeatFailures {
-			r.N++
-		} else {
-			r.Errors++
+		r.errors++
+		r.errorKinds[err.Error()] = nil
+		if r.repeatFailures {
+			r.nCharts++
 		}
+
 		return nil, fmt.Errorf("failed to package chart: %w", err)
 	}
 
 	return buf, nil
 }
 
-func (r *Routine) pushChart(reader io.Reader, force bool) error {
-	return r.pushContent(username, password, reader, "application/octet-stream", &url.URL{
-		Scheme: "https",
-		Host:   host,
-		Path:   fmt.Sprintf("/charts/api/%s/%s/charts", namespace, repository),
-	}, force)
+func (r *routine) pushChart(reader io.Reader, username, password, u string, force bool) error {
+	_u, err := url.Parse(u)
+	if err != nil {
+		return err
+	}
+
+	return r.pushContent(username, password, reader, "application/octet-stream", _u, force)
 }
 
-func (r *Routine) pushContent(username, password string, reader io.Reader, contentType string, u *url.URL, force bool) error {
+func (r *routine) pushContent(username, password string, reader io.Reader, contentType string, u *url.URL, force bool) error {
 	var (
 		err  error
 		b    []byte
@@ -156,10 +176,10 @@ func (r *Routine) pushContent(username, password string, reader io.Reader, conte
 
 	defer func() {
 		if err != nil {
-			if r.RepeatFailures {
-				r.N++
-			} else {
-				r.Errors++
+			r.errors++
+			r.errorKinds[err.Error()] = nil
+			if r.repeatFailures {
+				r.nCharts++
 			}
 		}
 	}()
