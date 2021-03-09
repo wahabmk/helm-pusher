@@ -8,10 +8,11 @@ import (
 
 const (
 	// TODO: Parameterize these.
-	nCharts        = int64(100000)
-	nVersions      = int64(50)
-	nRoutines      = int64(100)
-	url            = "https://52.66.227.158/charts/api/admin/myrepo/charts"
+	nCharts   = int64(50000)
+	nVersions = int64(100)
+	nRoutines = int64(20)
+	// this
+	url            = "http://127.0.0.1:8080/api/charts"
 	repeatFailures = false
 	verbose        = true
 	username       = "admin"

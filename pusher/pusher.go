@@ -122,7 +122,10 @@ func (p *Pusher) Push() error {
 	fmt.Printf("* With go-routines = %d\n", p.nRoutines)
 	fmt.Printf("* With repeat failues = %v\n", p.repeatFailures)
 	fmt.Printf("* With verbose logging = %v\n", p.verbose)
-	fmt.Printf("\n\n")
+
+	delay := 10 * time.Second
+	fmt.Printf("\nStarting in %v ...\n\n", delay)
+	time.Sleep(delay)
 
 	startTime = time.Now()
 	var wg sync.WaitGroup
