@@ -67,7 +67,16 @@ func (r *routine) push(versions int64, url, username, password string) {
 				continue
 			}
 
-			if err = r.pushChart(reader, username, password, url, false); err != nil {
+			// fmt.Println("----------------------------------------------------------------------------")
+			// fmt.Printf("url = %s\n", url)
+			// fmt.Printf("name = %s\n", name)
+			// fmt.Printf("version = %s\n", version)
+
+			u := url + fmt.Sprintf("/%s-%s.tgz", name, version)
+			// fmt.Printf("NewURL = %s\n", url)
+			// fmt.Println("----------------------------------------------------------------------------")
+
+			if err = r.pushChart(reader, username, password, u, false); err != nil {
 				continue
 			}
 		}
@@ -163,7 +172,9 @@ func (r *routine) pushChart(reader io.Reader, username, password, u string, forc
 		return err
 	}
 
-	return r.pushContent(username, password, reader, "application/octet-stream", _u, force)
+	// fmt.Printf("++++++ url = %s", _u.String())
+	return r.pushToArtifactory(username, password, reader, _u)
+	// return r.pushContent(username, password, reader, "application/octet-stream", _u, force)
 }
 
 func (r *routine) pushToArtifactory(username, password string, reader io.Reader, u *url.URL) error {
