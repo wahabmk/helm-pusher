@@ -166,6 +166,52 @@ func (r *routine) pushChart(reader io.Reader, username, password, u string, forc
 	return r.pushContent(username, password, reader, "application/octet-stream", _u, force)
 }
 
+func (r *routine) pushToArtifactory(username, password string, reader io.Reader, u *url.URL) error {
+	var (
+		err  error
+		b    []byte
+		req  *http.Request
+		resp *http.Response
+	)
+
+	defer func() {
+		if err != nil {
+			r.errors++
+			r.errorKinds[err.Error()] = nil
+			if r.repeatFailures {
+				r.nCharts++
+			}
+		}
+	}()
+
+	b, err = ioutil.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+
+	req, err = http.NewRequest(http.MethodPut, u.String(), bytes.NewBuffer(b))
+	if err != nil {
+		return err
+	}
+
+	if username != "" {
+		req.SetBasicAuth(username, password)
+	}
+
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		err = fmt.Errorf("returned with status %d", resp.StatusCode)
+		return err
+	}
+
+	return nil
+}
+
 func (r *routine) pushContent(username, password string, reader io.Reader, contentType string, u *url.URL, force bool) error {
 	var (
 		err  error
@@ -193,7 +239,10 @@ func (r *routine) pushContent(username, password string, reader io.Reader, conte
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth(username, password)
+
+	if username != "" {
+		req.SetBasicAuth(username, password)
+	}
 	req.Header.Set("Content-Type", contentType)
 
 	if force {

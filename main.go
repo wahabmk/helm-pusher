@@ -8,14 +8,15 @@ import (
 
 const (
 	// TODO: Parameterize these.
-	nCharts        = int64(1000)
-	nVersions      = int64(10)
-	nRoutines      = int64(5)
-	url            = "https://13.126.107.180:443/charts/api/admin/myrepo/charts"
+	nCharts   = int64(10000)
+	nVersions = int64(100)
+	nRoutines = int64(10)
+	// url            = "https://13.126.107.180:443/charts/api/admin/myrepo/charts"
+	url            = "http://65.1.113.103:8082/artifactory/myrepo"
 	repeatFailures = false
 	verbose        = true
-	username       = "admin"
-	password       = "password1234"
+	username       = ""
+	password       = ""
 	templateChart  = "/tmp/testchart"
 )
 
