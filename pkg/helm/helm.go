@@ -25,10 +25,10 @@ func PackageChart(c *chart.Chart) (io.Reader, error) {
 		return nil, fmt.Errorf("chart validation: %w", err)
 	}
 
-	buf := bytes.NewBuffer([]byte{})
+	var buf bytes.Buffer
 
 	// Wrap in gzip writer
-	zipper := gzip.NewWriter(buf)
+	zipper := gzip.NewWriter(&buf)
 	zipper.Header.Extra = headerBytes
 	zipper.Header.Comment = "Helm"
 
@@ -44,7 +44,7 @@ func PackageChart(c *chart.Chart) (io.Reader, error) {
 		return nil, err
 	}
 
-	return buf, nil
+	return &buf, nil
 }
 
 func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
