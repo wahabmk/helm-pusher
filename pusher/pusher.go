@@ -1,181 +1,169 @@
 package pusher
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"math"
+	"io"
+	"io/ioutil"
+	"net/url"
+	neturl "net/url"
 	"os"
 	"os/exec"
-	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/wahabmk/helm-pusher/pkg/generator"
+	"github.com/wahabmk/helm-pusher/pkg/helm"
+	"golang.org/x/sync/errgroup"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
-const (
-	templateChart = "/tmp/testchart"
-)
+const maxAttempts = 5
 
 type Pusher struct {
-	nCharts        int64
-	nVersions      int64
-	nRoutines      int64
-	url            string
-	username       string
-	password       string
-	repeatFailures bool
-	verbose        bool
-	helmExec       string
+	// The following fields need to be placed at the beginning of the struct to
+	// ensure 64-bit alignment for atomic operations.
+	nVersions int64
+	conflicts int64
+
+	nCharts   int
+	nRoutines int
+	url       *url.URL
 }
 
-func New(nCharts, nVersions, nRoutines int64, url, username, password string, repeatFailures, verbose bool) (*Pusher, error) {
+func New(nCharts, nVersions, nRoutines int, url string) (*Pusher, error) {
 	if nRoutines <= 0 {
 		return nil, fmt.Errorf("nRoutines cannot be <= 0")
-	}
-	if nRoutines > nCharts {
-		return nil, fmt.Errorf("nRoutines cannot be > nCharts")
 	}
 	if nCharts <= 0 {
 		return nil, fmt.Errorf("nCharts cannot be <= 0")
 	}
-	if nCharts < nVersions {
-		return nil, fmt.Errorf("nCharts cannot be less than nVersions")
+	if nVersions <= 0 {
+		return nil, fmt.Errorf("nVersions cannot be <= 0")
+	}
+	if nVersions < nCharts {
+		return nil, fmt.Errorf("nVersions cannot be less than nCharts")
 	}
 
-	// Check if helm is installed
-	helmExec, err := exec.LookPath("helm")
+	parsedURL, err := neturl.Parse(url)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Pusher{
-		nCharts:        nCharts,
-		nVersions:      nVersions,
-		nRoutines:      nRoutines,
-		url:            url,
-		username:       username,
-		password:       password,
-		repeatFailures: repeatFailures,
-		verbose:        verbose,
-		helmExec:       helmExec,
+		nCharts:   nCharts,
+		nVersions: int64(nVersions),
+		nRoutines: nRoutines,
+		url:       parsedURL,
 	}, nil
 }
 
-func (p *Pusher) Push() error {
-	// Create template chart
-	if err := p.helm("create", templateChart); err != nil {
-		return fmt.Errorf("unable to create temporary Helm chart: %s", err)
-	}
-
-	defer func() {
-		if err := os.RemoveAll(templateChart); err != nil {
-			println(fmt.Sprintf("error removing template chart: %s", err))
-		}
-	}()
-
-	chartTempl, err := loader.LoadDir(templateChart)
+func createTemplateChart(ctx context.Context) (tpl *chart.Chart, err error) {
+	templateChart, err := ioutil.TempDir("", "helm-pusher-")
 	if err != nil {
-		return fmt.Errorf("failed to load template chart %q: %w", templateChart, err)
+		return nil, fmt.Errorf("unable to create temporary directory: %w", err)
 	}
-
-	// Create objects for the number fo go-routines required.
-	each := math.Ceil(float64(p.nCharts) / float64(p.nRoutines))
-	routines := make([]*routine, p.nRoutines)
-	for i := int64(0); i < p.nRoutines; i++ {
-		routines[i] = &routine{
-			id:             i,
-			nCharts:        int64(each),
-			chart:          func(c chart.Chart) *chart.Chart { return &c }(*chartTempl),
-			repeatFailures: p.repeatFailures,
-			errorKinds:     map[string]interface{}{},
-		}
-	}
-
-	if diff := p.nRoutines*int64(each) - p.nCharts; diff > 0 {
-		routines[len(routines)-1].nCharts -= diff
-	}
-
-	var startTime time.Time
-	// Go-routine to log progress every few seconds.
-	go func() {
-		for {
-			time.Sleep(5 * time.Second)
-			if p.verbose {
-				var done int64 = 0
-				var errors int64 = 0
-				for i := int64(0); i < p.nRoutines; i++ {
-					// done and errors may not be accurate because the write is not synchronized,
-					// but this is just for logging so it is okay.
-					done += routines[i].nCharts
-					errors += routines[i].errors
-				}
-				fmt.Printf("%d chart push attempts\twith %d (%.2f perc) errors\tin %v\n", p.nCharts-done, errors, float64(errors*100)/float64(p.nCharts-done), time.Now().Sub(startTime).Round(1*time.Millisecond))
+	defer func() {
+		if rmErr := os.RemoveAll(templateChart); rmErr != nil {
+			rmErr = fmt.Errorf("error removing template chart: %w", rmErr)
+			if err != nil {
+				err = fmt.Errorf("%w; %s", err, rmErr)
 			} else {
-				fmt.Printf("... ")
+				err = rmErr
 			}
 		}
 	}()
 
-	fmt.Printf("Pushing %d charts:\n", p.nCharts)
-	fmt.Printf("* To %s\n", p.url)
-	fmt.Printf("* With each chart having random number of versions between 1 to %d\n", p.nVersions)
-	fmt.Printf("* With go-routines = %d\n", p.nRoutines)
-	fmt.Printf("* With repeat failues = %v\n", p.repeatFailures)
-	fmt.Printf("* With verbose logging = %v\n", p.verbose)
-
-	delay := 10 * time.Second
-	fmt.Printf("\nStarting in %v ...\n\n", delay)
-	time.Sleep(delay)
-
-	startTime = time.Now()
-	var wg sync.WaitGroup
-	for i := int64(0); i < p.nRoutines; i++ {
-		wg.Add(1)
-		go func(idx int64) {
-			routines[idx].push(p.nVersions, p.url, p.username, p.password)
-			wg.Done()
-		}(i)
+	if err := helmCommand(ctx, "create", templateChart); err != nil {
+		return nil, fmt.Errorf("unable to create temporary Helm chart: %w", err)
 	}
-	wg.Wait()
-	endTime := time.Now()
+	return loader.LoadDir(templateChart)
+}
 
-	// Output results.
-	var errors int64 = 0
-	for i := int64(0); i < p.nRoutines; i++ {
-		errors += routines[i].errors
+func generateChart(template *chart.Chart, name, version string) (io.Reader, error) {
+	// Make a copy, deep-copying the bits that will be modified.
+	md := *template.Metadata
+	md.Name = name
+	md.Version = version
+
+	c := *template
+	c.Metadata = &md
+	return helm.PackageChart(&c)
+}
+
+func (p *Pusher) Do(ctx context.Context) error {
+	chartTempl, err := createTemplateChart(ctx)
+	if err != nil {
+		return err
 	}
 
-	// TODO: Find better way of determining number of charts successfully pushed.
-	// Currently if `repeatFailures=true`, then this number is inaccurate.
-	fmt.Printf("\n\nResults:\n")
-	fmt.Printf("* Charts successfully pushed: %d\n", p.nCharts-errors)
-	fmt.Printf("* Time elapsed: %v\n", endTime.Sub(startTime).Round(1*time.Millisecond))
-	fmt.Printf("* Errors encountered: %d\n", errors)
-	fmt.Printf("* Kinds of errors encountered: ")
+	rng := generator.New(p.nCharts)
+	wg, ctx := errgroup.WithContext(ctx)
+	for i := 0; i < p.nRoutines; i++ {
+		wg.Go(func() error { return p.do(ctx, chartTempl, &rng) })
+	}
 
-	errKinds := map[string]interface{}{}
-	for i := int64(0); i < p.nRoutines; i++ {
-		for e := range routines[i].errorKinds {
-			errKinds[e] = nil
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				v := p.nVersions
+				if v < 0 {
+					v = 0
+				}
+				fmt.Printf("%d chart versions remaining (%d conflicts)\n", v, p.conflicts)
+			case <-ctx.Done():
+				fmt.Printf("Total conflicts: %d\n", p.conflicts)
+				return
+			}
+		}
+	}()
+
+	return wg.Wait()
+}
+
+func (p *Pusher) do(ctx context.Context, tpl *chart.Chart, rng *generator.Generator) error {
+	u := p.url.String()
+
+	for atomic.AddInt64(&p.nVersions, -1) >= 0 {
+		success := false
+		var attempt int
+		for !success {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			attempt++
+			if attempt > maxAttempts {
+				return fmt.Errorf("too many failed attempts; giving up")
+			}
+
+			c, err := generateChart(tpl, rng.ChartName(), rng.Semver())
+			if err != nil {
+				return fmt.Errorf("error generating chart from template: %w", err)
+			}
+
+			if err := pushChart(ctx, c, u, false); err != nil {
+				if errors.Is(err, ErrConflict) {
+					atomic.AddInt64(&p.conflicts, 1)
+					continue
+				}
+				return err
+			}
+			success = true
 		}
 	}
-
-	if len(errKinds) == 0 {
-		fmt.Printf("None")
-	}
-	fmt.Printf("\n")
-
-	i := 1
-	for e := range errKinds {
-		fmt.Printf("\t%d. %s\n", i, e)
-		i++
-	}
-
 	return nil
 }
 
-func (p *Pusher) helm(arg ...string) error {
-	cmd := exec.Command(p.helmExec, arg...)
+func helmCommand(ctx context.Context, arg ...string) error {
+	cmd := exec.CommandContext(ctx, "helm", arg...)
 
 	_, err := cmd.Output()
 	if ee, ok := err.(*exec.ExitError); ok {
